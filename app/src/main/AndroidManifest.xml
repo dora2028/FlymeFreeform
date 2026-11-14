@@ -37,7 +37,7 @@
             android:name=".framework.SharedStateReceiver"
             android:exported="true">
             <intent-filter>
-                <action android:name="io.github.mangi.flymefreeform.action.SHARED_STATE" />
+                <action android:name="coloros.flymefreeform.action.SHARED_STATE" />
             </intent-filter>
         </receiver>
     </application>

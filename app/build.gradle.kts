@@ -8,13 +8,13 @@ val flymeFreeformVersionCode = providers.gradleProperty("flymeFreeformVersionCod
 val flymeFreeformVersionName = providers.gradleProperty("flymeFreeformVersionName").get()
 
 android {
-    namespace = "io.github.mangi.flymefreeform"
+    namespace = "coloros.flymefreeform"
     compileSdk {
         version = release(37)
     }
 
     defaultConfig {
-        applicationId = "io.github.mangi.flymefreeform"
+        applicationId = "coloros.flymefreeform"
         minSdk = 35
         targetSdk = 37
         versionCode = flymeFreeformVersionCode

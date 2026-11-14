@@ -46,6 +46,8 @@
 - **应用管理**：支持外圈最多六个、内圈最多五个固定项，支持拖动排序，通过“更多”访问其他应用与系统工具。
 - **手势设置**：左右入口独立开关，可调整角落触发范围。
 - **自动暂停**：默认在横屏或游戏模式下暂停增强，退出后自动恢复，可分别关闭。
+- **外部触发**：`am broadcast -a coloros.flymefreeform.action.RUN_TOOL --es tool_alias <别名>`
+  可按别名执行侧边栏工具，供 Tasker、快捷指令等外部工具调用（别名用 `settings get global flymefreeform_tool_catalog_v1` 查），详见 [docs/external-trigger.md](docs/external-trigger.md)。
 
 *更多功能持续开发中。*
 
