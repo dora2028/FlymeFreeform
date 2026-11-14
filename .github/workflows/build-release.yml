@@ -1,0 +1,129 @@
+name: Build FlymeFreeform release APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      # 项目没有 signingConfig，release 产物需外部 apksigner 签名。
+      # 签名一致性不作要求，每次现场生成 keystore，无需任何 secret。
+      KS_FILE: ${{ github.workspace }}/ci-release.jks
+      KS_ALIAS: flymefreeform
+      # 一次性密钥的口令，仅用于本次 CI 生成的临时 keystore，不是真实凭据。
+      KS_PASS: ci-throwaway-key
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 25 (Gradle daemon)
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up JDK 17 (Java toolchain)
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Locate preinstalled Android SDK
+        # 不用 android-actions/setup-android：v3 在 cmdline-tools 16.0 上
+        # 默认会去装已废弃的 'tools' 包并失败；runner 镜像已预装
+        # platforms;android-37.x 与 build-tools;37.0.0。
+        run: |
+          SDK=/usr/local/lib/android/sdk
+          test -d "$SDK/platforms" || { echo "SDK not found"; exit 1; }
+          echo "ANDROID_HOME=$SDK"     >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "=== installed platforms ==="
+          ls "$SDK/platforms" | grep '^android-37' || true
+          echo "=== installed build-tools ==="
+          ls "$SDK/build-tools" | grep '^37' || true
+
+      - name: Generate throwaway signing key
+        run: |
+          keytool -genkeypair -v \
+            -keystore "$KS_FILE" \
+            -alias "$KS_ALIAS" \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass "$KS_PASS" \
+            -keypass "$KS_PASS" \
+            -dname "CN=FlymeFreeform CI, O=Personal Build, C=CN"
+
+      - name: Build release APK (unsigned)
+        run: |
+          # gradle-daemon-jvm.properties 要求 JDK 25，java.toolchain 要求 JDK 17；
+          # 显式给出两个 JDK 安装路径，避免 foojay 在线下载工具链超时。
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease --console=plain --no-daemon \
+            -Dorg.gradle.java.installations.paths="${JAVA_HOME_25_X64},${JAVA_HOME_17_X64}"
+
+      - name: Align and sign
+        run: |
+          # androidComponents 指定产物名为 FlymeFreeform-<version>.apk；
+          # 排除本步骤自己生成的 -aligned / -signed 中间文件。
+          APK=$(find app/build/outputs/apk/release -name 'FlymeFreeform-*.apk' -type f \
+                  ! -name '*-aligned.apk' ! -name '*-signed.apk' | head -1)
+          test -n "$APK" || { echo "release APK not found"; find app/build/outputs -type f | head -20; exit 1; }
+          echo "unsigned: $APK"
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/37* 2>/dev/null | sort -V | tail -1)
+          test -n "$BT" || { echo "build-tools 37 not found"; exit 1; }
+          echo "build-tools: $BT"
+
+          ALIGNED="${APK%.apk}-aligned.apk"
+          "$BT/zipalign" -p -f -v 4 "$APK" "$ALIGNED"
+          "$BT/apksigner" sign \
+            --ks "$KS_FILE" --ks-key-alias "$KS_ALIAS" \
+            --ks-pass "pass:$KS_PASS" --key-pass "pass:$KS_PASS" \
+            --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
+            --out "${APK%.apk}-signed.apk" "$ALIGNED"
+          echo "SIGNED_APK=${APK%.apk}-signed.apk" >> "$GITHUB_ENV"
+
+      - name: Verify APK
+        run: |
+          APK="$SIGNED_APK"
+          test -f "$APK"
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/37* | sort -V | tail -1)
+          "$BT/apksigner" verify --print-certs "$APK" | grep -E "certificate (DN|SHA-256)" | head -5
+          "$BT/aapt" dump badging "$APK" | grep -E "^package:|application-label:" | head -5
+          echo "=== 新代码是否打进 dex ==="
+          unzip -p "$APK" classes*.dex 2>/dev/null | grep -a -o -E 'coloros\.flymefreeform\.action\.RUN_TOOL|EXTERNAL_TOOL_RECEIVER_READY|TouchInteractionService' | sort -u | head -10 || true
+
+      - name: Rename artifact
+        run: |
+          VERSION=$(grep -oP 'flymeFreeformVersionName=\K[^\s]+' gradle.properties)
+          CODE=$(grep -oP 'flymeFreeformVersionCode=\K[0-9]+' gradle.properties)
+          OUT="FlymeFreeform-${VERSION}-${CODE}-release.apk"
+          cp "$SIGNED_APK" "$OUT"
+          echo "APK_NAME=$OUT" >> "$GITHUB_ENV"
+          echo "APK_SHA256=$(sha256sum "$OUT" | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          ls -lh "$OUT"
+
+      - name: Upload APK (30-day artifact, no release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlymeFreeform-release
+          path: ${{ env.APK_NAME }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Summary
+        run: |
+          echo "### 构建产物" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 文件：\`${APK_NAME}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 包名：\`coloros.flymefreeform\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- SHA-256：\`${APK_SHA256}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 签名：CI 现场生成，v1/v2/v3，每次构建不同" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 仅上传 artifact（保留 30 天），未创建 GitHub Release" >> "$GITHUB_STEP_SUMMARY"
